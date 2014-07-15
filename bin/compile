@@ -13,11 +13,36 @@ function indent() {
 unset GIT_DIR
 
 for BUILDPACK in $(cat $1/.buildpacks); do
+  if [[ ${BUILDPACK:0:2} == '//' ]]; then
+    continue
+  fi
+  if [[ ${BUILDPACK:0:1} == '#' ]]; then
+    script=$(echo $BUILDPACK | awk -F'#' '{print $2}')
+    echo "=====> Running Script: $script"
+    /bin/bash $1/.scripts/$script
+    continue
+  fi
+
   dir=$(mktemp -t buildpackXXXXX)
   rm -rf $dir
 
-  url=${BUILDPACK%#*}
-  branch=${BUILDPACK#*#}
+  url=$(echo $BUILDPACK | awk -F'#' '{print $1}')
+  branch=$(echo $BUILDPACK | awk -F'#' '{print $2}')
+  user=$(echo $BUILDPACK | awk -F'#' '{print $3}')
+  run_as_user=""
+  if [ "$user" != "" ]; then
+    if ! id -u $user >/dev/null 2>&1; then
+      echo "=====> Adding User: $user"
+      sudo adduser $user --quiet --disabled-login --gecos ""
+    fi
+    sudo passwd -q -d $user
+    sudo adduser --quiet $user sudo
+    sudo adduser --quiet $user slugbuilder
+
+    groups $user
+    echo "=====> Running as User: $user"
+    run_as_user="sudo -u "$user" env STACK=$STACK REQUEST_ID=$REQUEST_ID "
+  fi
 
   if [ "$branch" == "$url" ]; then
     branch=""
@@ -32,6 +57,10 @@ for BUILDPACK in $(cat $1/.buildpacks); do
     else
       git clone $url $dir >/dev/null 2>&1
     fi
+
+    sudo chmod -R 775 $1 $2 $3 $dir
+    sudo chown -R $user $1 $2 $3 $dir
+
     cd $dir
 
     if [ "$branch" != "" ]; then
@@ -45,14 +74,18 @@ for BUILDPACK in $(cat $1/.buildpacks); do
 
     if [ $? == 0 ]; then
       echo "=====> Detected Framework: $framework"
-      $dir/bin/compile $1 $2 $3
+      eval $run_as_user$dir/bin/compile $1 $2 $3
+
+      if [ "$user" != "" ]; then
+        sudo chmod -R 775 $1 $2 $3
+      fi
 
       if [ $? != 0 ]; then
         exit 1
       fi
 
       if [ -x $dir/bin/release ]; then
-        $dir/bin/release $1 > $1/last_pack_release.out
+        eval $run_as_user$dir/bin/release $1 > $1/last_pack_release.out
       fi
     fi
   fi
